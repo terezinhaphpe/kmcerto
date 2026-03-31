@@ -712,8 +712,13 @@ class KmCertoAccessibilityService : AccessibilityService() {
 
     if (text.isBlank()) return
 
+    // FILTRO RÁPIDO: só continua se tiver palavra de oferta de corrida.
+    // Uber, 99 e iFood sempre mostram "aceitar" ou "selecionar" na tela de oferta.
+    // Isso evita processar notificações, mapas e outras telas aleatórias.
+    val textLower = text.lowercase()
+    if (!textLower.contains("aceitar") && !textLower.contains("selecionar")) return
+
     // Se nenhuma janela tinha packageName suportado, usa o pacote do evento como fallback.
-    // O parser filtra por conteúdo (R$, km, aceitar), não por pacote.
     if (!KmCertoRuntime.supportsPackage(detectedPackage)) {
       detectedPackage = eventPackage
     }
@@ -1132,98 +1137,122 @@ class KmCertoOverlayService : Service() {
 
     val isAccept = data.status.lowercase().contains("aceitar")
     val accentColor = if (isAccept) "#16A34A" else "#DC2626"
-    val bgColor = "#E6111111"
 
-    // ── Container principal ──────────────────────────────────────────────
-    val container = LinearLayout(this).apply {
+    // ── Fundo semi-transparente (tela inteira) ───────────────────────────
+    val root = FrameLayout(this).apply {
+      setBackgroundColor(Color.parseColor("#BB000000"))
+    }
+
+    // ── Card central ─────────────────────────────────────────────────────
+    val card = LinearLayout(this).apply {
       orientation = LinearLayout.VERTICAL
       gravity = Gravity.CENTER_HORIZONTAL
-      setPadding(dp(16), dp(12), dp(16), dp(12))
+      setPadding(dp(24), dp(22), dp(24), dp(26))
       background = GradientDrawable().apply {
-        setColor(Color.parseColor(bgColor))
-        cornerRadius = dp(16).toFloat()
-        setStroke(dp(2), Color.parseColor(accentColor))
+        setColor(Color.parseColor("#F0111111"))
+        cornerRadius = dp(20).toFloat()
+        setStroke(dp(3), Color.parseColor(accentColor))
       }
     }
 
-    // ── Linha 1: Status + contexto ───────────────────────────────────────
-    val statusLine = TextView(this).apply {
-      text = "${data.status}: Valor da viagem"
-      setTextColor(Color.parseColor(accentColor))
-      setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+    // ── Pill ACEITAR / RECUSAR ────────────────────────────────────────────
+    val statusPill = TextView(this).apply {
+      text = data.status.uppercase()
+      setTextColor(Color.WHITE)
+      setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
       setTypeface(typeface, Typeface.BOLD)
       gravity = Gravity.CENTER
+      setPadding(dp(22), dp(7), dp(22), dp(7))
+      background = GradientDrawable().apply {
+        setColor(Color.parseColor(accentColor))
+        cornerRadius = dp(20).toFloat()
+      }
     }
-    container.addView(statusLine)
-    container.addView(spaceView(dp(6)))
+    card.addView(statusPill, LinearLayout.LayoutParams(
+      LinearLayout.LayoutParams.WRAP_CONTENT,
+      LinearLayout.LayoutParams.WRAP_CONTENT
+    ).apply { gravity = Gravity.CENTER_HORIZONTAL })
+    card.addView(spaceView(dp(18)))
 
-    // ── Linha 2: Métricas grandes coloridas ──────────────────────────────
+    // ── Métricas grandes ──────────────────────────────────────────────────
     val metricsRow = LinearLayout(this).apply {
       orientation = LinearLayout.HORIZONTAL
       gravity = Gravity.CENTER
     }
 
-    metricsRow.addView(createColorMetric(
-      String.format(Locale("pt", "BR"), "%.2f", data.perKm),
-      "/km",
-      accentColor
+    metricsRow.addView(createBigMetric(
+      String.format(Locale("pt", "BR"), "%.2f", data.perKm), "/km", accentColor
     ))
-
     if (data.perHour != null) {
-      metricsRow.addView(createSeparator())
-      metricsRow.addView(createColorMetric(
-        String.format(Locale("pt", "BR"), "%.0f", data.perHour),
-        "/hr",
-        accentColor
+      metricsRow.addView(createPipe())
+      metricsRow.addView(createBigMetric(
+        String.format(Locale("pt", "BR"), "%.0f", data.perHour), "/hr", accentColor
       ))
     }
-
     if (data.perMinute != null) {
-      metricsRow.addView(createSeparator())
-      metricsRow.addView(createColorMetric(
-        String.format(Locale("pt", "BR"), "%.2f", data.perMinute),
-        "/min",
-        accentColor
+      metricsRow.addView(createPipe())
+      metricsRow.addView(createBigMetric(
+        String.format(Locale("pt", "BR"), "%.2f", data.perMinute), "/min", accentColor
       ))
     }
+    card.addView(metricsRow)
+    card.addView(spaceView(dp(14)))
 
-    container.addView(metricsRow)
-    container.addView(spaceView(dp(4)))
+    // ── Divider ───────────────────────────────────────────────────────────
+    card.addView(android.view.View(this).apply {
+      setBackgroundColor(Color.parseColor("#44FFFFFF"))
+    }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)))
+    card.addView(spaceView(dp(12)))
 
-    // ── Linha 3: Detalhes (min | km) ─────────────────────────────────────
+    // ── Detalhes: km · min · app ──────────────────────────────────────────
     val detailParts = mutableListOf<String>()
-    data.totalMinutes?.let { detailParts.add("${it.toInt()} min") }
     detailParts.add(String.format(Locale("pt", "BR"), "%.1f km", data.totalDistance))
+    data.totalMinutes?.let { detailParts.add("${it.toInt()} min") }
+    detailParts.add(data.sourceApp)
 
-    val detailLine = TextView(this).apply {
-      text = detailParts.joinToString(" | ")
-      setTextColor(Color.parseColor("#CCCCCC"))
-      setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+    card.addView(TextView(this).apply {
+      text = detailParts.joinToString("  ·  ")
+      setTextColor(Color.parseColor("#AAAAAA"))
+      setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
       gravity = Gravity.CENTER
-    }
-    container.addView(detailLine)
+    })
+    card.addView(spaceView(dp(6)))
 
-    // ── Configurar janela do overlay ─────────────────────────────────────
+    // ── Valor total ───────────────────────────────────────────────────────
+    card.addView(TextView(this).apply {
+      text = data.totalFareLabel
+      setTextColor(Color.parseColor("#DDDDDD"))
+      setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+      gravity = Gravity.CENTER
+    })
+
+    // ── Card no centro da tela ────────────────────────────────────────────
+    root.addView(card, FrameLayout.LayoutParams(
+      FrameLayout.LayoutParams.MATCH_PARENT,
+      FrameLayout.LayoutParams.WRAP_CONTENT,
+      Gravity.CENTER
+    ).apply { leftMargin = dp(28); rightMargin = dp(28) })
+
+    // Toque fora fecha
+    root.setOnClickListener {
+      hideOverlayInternal(); stopForegroundCompat(); stopSelf()
+    }
+
+    // ── Janela fullscreen ─────────────────────────────────────────────────
     val lp = WindowManager.LayoutParams(
       WindowManager.LayoutParams.MATCH_PARENT,
-      WindowManager.LayoutParams.WRAP_CONTENT,
+      WindowManager.LayoutParams.MATCH_PARENT,
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
       else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
       WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
         WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
       PixelFormat.TRANSLUCENT,
-    ).apply {
-      gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-      x = 0; y = dp(72)
-      width = WindowManager.LayoutParams.MATCH_PARENT
-      horizontalMargin = 0.04f
-    }
+    )
 
     try {
-      manager.addView(container, lp)
-      overlayView = container
+      manager.addView(root, lp)
+      rootOverlayView = root
       handler.removeCallbacks(dismissRunnable)
       handler.postDelayed(dismissRunnable, AUTO_DISMISS_MS)
     } catch (_: Throwable) {
@@ -1231,30 +1260,32 @@ class KmCertoOverlayService : Service() {
     }
   }
 
-  private fun createColorMetric(value: String, unit: String, color: String): LinearLayout {
+  private var rootOverlayView: FrameLayout? = null
+
+  private fun createBigMetric(value: String, unit: String, color: String): LinearLayout {
     return LinearLayout(this).apply {
       orientation = LinearLayout.HORIZONTAL
       gravity = Gravity.CENTER_VERTICAL
       addView(TextView(this@KmCertoOverlayService).apply {
         text = value
         setTextColor(Color.parseColor(color))
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 24f)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 38f)
         setTypeface(typeface, Typeface.BOLD)
       })
       addView(TextView(this@KmCertoOverlayService).apply {
         text = unit
-        setTextColor(Color.parseColor("#AAAAAA"))
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-        setPadding(0, dp(4), 0, 0)
+        setTextColor(Color.parseColor("#888888"))
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        setPadding(dp(2), dp(10), 0, 0)
       })
     }
   }
 
-  private fun createSeparator(): TextView {
+  private fun createPipe(): TextView {
     return TextView(this).apply {
       text = "  |  "
-      setTextColor(Color.parseColor("#666666"))
-      setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+      setTextColor(Color.parseColor("#555555"))
+      setTextSize(TypedValue.COMPLEX_UNIT_SP, 28f)
       gravity = Gravity.CENTER
     }
   }
@@ -1263,6 +1294,8 @@ class KmCertoOverlayService : Service() {
     handler.removeCallbacks(dismissRunnable)
     overlayView?.let { try { windowManager?.removeView(it) } catch (_: Throwable) { } }
     overlayView = null
+    rootOverlayView?.let { try { windowManager?.removeView(it) } catch (_: Throwable) { } }
+    rootOverlayView = null
   }
 
   private fun spaceView(height: Int): TextView =
