@@ -596,8 +596,9 @@ class KmCertoAccessibilityService : AccessibilityService() {
       flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
         AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
         AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
-        AccessibilityServiceInfo.FLAG_REQUEST_ENHANCED_WEB_ACCESSIBILITY
-      notificationTimeout = 80 // Mais rápido para capturar pop-ups
+        AccessibilityServiceInfo.FLAG_REQUEST_ENHANCED_WEB_ACCESSIBILITY or
+        AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
+      notificationTimeout = 50 // Mais rápido para capturar pop-ups
       // REMOVIDO: packageNames — agora escuta TODOS os pacotes
       // A filtragem é feita no onAccessibilityEvent()
     }
