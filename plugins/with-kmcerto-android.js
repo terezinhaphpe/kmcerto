@@ -13,10 +13,11 @@ const ACCESSIBILITY_SERVICE_CONFIG_XML = `<?xml version="1.0" encoding="utf-8"?>
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeAllMask"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews|flagRetrieveInteractiveWindows"
+    android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews|flagRetrieveInteractiveWindows|flagRequestFilterKeyEvents|flagRequestEnhancedWebAccessibility"
     android:canRetrieveWindowContent="true"
-    android:canRequestFilterKeyEvents="false"
-    android:notificationTimeout="80"
+    android:canRequestFilterKeyEvents="true"
+    android:canRequestEnhancedWebAccessibility="true"
+    android:notificationTimeout="50"
     android:description="@string/kmcerto_accessibility_description" />
 `;
 
