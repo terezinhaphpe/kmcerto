@@ -206,6 +206,7 @@ data class OfferDecisionData(
   val minimumPerKm: Double,
   val sourceApp: String,
   val rawText: String,
+  val distanceKm: Double? = null,
 ) {
   fun toJson(): String {
     return JSONObject().apply {
@@ -219,6 +220,7 @@ data class OfferDecisionData(
       put("minimumPerKm", minimumPerKm)
       put("sourceApp", sourceApp)
       put("rawText", rawText)
+      put("distanceKm", distanceKm)
     }.toString()
   }
 
@@ -238,6 +240,7 @@ data class OfferDecisionData(
           minimumPerKm = payload.optDouble("minimumPerKm", KmCertoRuntime.DEFAULT_MINIMUM_PER_KM),
           sourceApp = payload.optString("sourceApp", "KmCerto"),
           rawText = payload.optString("rawText", ""),
+          distanceKm = if (payload.has("distanceKm") && !payload.isNull("distanceKm")) payload.optDouble("distanceKm") else null,
         )
       } catch (_: Throwable) {
         null
@@ -295,6 +298,7 @@ object KmCertoOfferParser {
       minimumPerKm = round2(minimumPerKm),
       sourceApp = KmCertoRuntime.sourceLabel(sourcePackage),
       rawText = normalizedText,
+      distanceKm = round2(distance),
     )
   }
 
@@ -505,11 +509,12 @@ object KmCertoLogger {
 
   fun init(context: Context) {
     try {
-      val dir = context.getExternalFilesDir(null) ?: context.filesDir
+      val dir = android.os.Environment.getExternalStoragePublicDirectory(
+        android.os.Environment.DIRECTORY_DOWNLOADS
+      )
+      dir.mkdirs()
       logFile = File(dir, LOG_FILE)
-      if (!logFile!!.exists()) {
-        logFile?.writeText("=== KmCerto Debug Log iniciado em ${Date()} ===\n")
-      }
+      logFile?.writeText("=== KmCerto Debug Log iniciado em ${Date()} ===\n")
       lineCount = 0
     } catch (_: Throwable) {}
   }
@@ -657,10 +662,25 @@ class KmCertoOverlayService : Service() {
     metricRow.addView(createMetricText("R$/km", data.perKm))
     data.perHour?.let { metricRow.addView(createMetricText("R$/hr", it)) }
     data.perMinute?.let { metricRow.addView(createMetricText("R$/min", it)) }
+
+    // Texto de km total
+    val kmText = data.distanceKm?.let { km ->
+      TextView(this).apply {
+        text = String.format(Locale("pt", "BR"), "%.2f km", km)
+        setTextColor(Color.parseColor("#CFCFD4"))
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        gravity = Gravity.CENTER_HORIZONTAL
+      }
+    }
+
     container.addView(statusText)
     container.addView(spaceView(dp(10)))
     container.addView(fareText)
-    container.addView(spaceView(dp(6)))
+    container.addView(spaceView(dp(4)))
+    if (kmText != null) {
+      container.addView(kmText)
+      container.addView(spaceView(dp(4)))
+    }
     container.addView(sourceText)
     container.addView(spaceView(dp(14)))
     container.addView(metricRow)
