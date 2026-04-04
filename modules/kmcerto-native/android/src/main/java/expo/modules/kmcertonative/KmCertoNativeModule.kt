@@ -28,9 +28,6 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.LinearLayout
 import android.widget.TextView
-import com.facebook.react.bridge.Arguments
-import com.facebook.react.bridge.ReactContext
-import com.facebook.react.modules.core.DeviceEventManagerModule
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import org.json.JSONObject
@@ -47,20 +44,17 @@ class KmCertoNativeModule : Module() {
     Events("KmCertoOverlayData")
 
     AsyncFunction("isOverlayPermissionGranted") {
-      val context = (appContext.reactContext as? ReactContext) ?: return@AsyncFunction false
-      KmCertoRuntime.bindReactContext(context)
+      val context = appContext.reactContext ?: return@AsyncFunction false
       Settings.canDrawOverlays(context)
     }
 
     AsyncFunction("isAccessibilityServiceEnabled") {
-      val context = (appContext.reactContext as? ReactContext) ?: return@AsyncFunction false
-      KmCertoRuntime.bindReactContext(context)
+      val context = appContext.reactContext ?: return@AsyncFunction false
       KmCertoAccessibilityService.isEnabled(context)
     }
 
     AsyncFunction("openOverlaySettings") {
-      val context = (appContext.reactContext as? ReactContext) ?: return@AsyncFunction false
-      KmCertoRuntime.bindReactContext(context)
+      val context = appContext.reactContext ?: return@AsyncFunction false
       try {
         val intent = Intent(
           Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -76,8 +70,7 @@ class KmCertoNativeModule : Module() {
     }
 
     AsyncFunction("openAccessibilitySettings") {
-      val context = (appContext.reactContext as? ReactContext) ?: return@AsyncFunction false
-      KmCertoRuntime.bindReactContext(context)
+      val context = appContext.reactContext ?: return@AsyncFunction false
       try {
         val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
           addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -90,37 +83,32 @@ class KmCertoNativeModule : Module() {
     }
 
     AsyncFunction("startMonitoring") {
-      val context = (appContext.reactContext as? ReactContext) ?: return@AsyncFunction false
-      KmCertoRuntime.bindReactContext(context)
+      val context = appContext.reactContext ?: return@AsyncFunction false
       KmCertoRuntime.setMonitoringEnabled(context, true)
       true
     }
 
     AsyncFunction("stopMonitoring") {
-      val context = (appContext.reactContext as? ReactContext) ?: return@AsyncFunction false
-      KmCertoRuntime.bindReactContext(context)
+      val context = appContext.reactContext ?: return@AsyncFunction false
       KmCertoRuntime.setMonitoringEnabled(context, false)
       KmCertoOverlayService.stop(context)
       true
     }
 
     AsyncFunction("hideOverlay") {
-      val context = (appContext.reactContext as? ReactContext) ?: return@AsyncFunction false
-      KmCertoRuntime.bindReactContext(context)
+      val context = appContext.reactContext ?: return@AsyncFunction false
       KmCertoOverlayService.stop(context)
       true
     }
 
     AsyncFunction("setMinimumPerKm") { value: Double ->
-      val context = (appContext.reactContext as? ReactContext) ?: return@AsyncFunction false
-      KmCertoRuntime.bindReactContext(context)
+      val context = appContext.reactContext ?: return@AsyncFunction false
       KmCertoRuntime.setMinimumPerKm(context, value)
       true
     }
 
     AsyncFunction("getMinimumPerKm") {
-      val context = (appContext.reactContext as? ReactContext) ?: return@AsyncFunction KmCertoRuntime.DEFAULT_MINIMUM_PER_KM
-      KmCertoRuntime.bindReactContext(context)
+      val context = appContext.reactContext ?: return@AsyncFunction KmCertoRuntime.DEFAULT_MINIMUM_PER_KM
       KmCertoRuntime.getMinimumPerKm(context)
     }
 
@@ -129,20 +117,30 @@ class KmCertoNativeModule : Module() {
     }
 
     AsyncFunction("clearLog") {
-      val context = (appContext.reactContext as? ReactContext) ?: return@AsyncFunction false
+      val context = appContext.reactContext ?: return@AsyncFunction false
       KmCertoLogger.init(context)
       true
     }
 
     AsyncFunction("showTestOverlay") { payload: String? ->
-      val context = (appContext.reactContext as? ReactContext) ?: return@AsyncFunction false
-      KmCertoRuntime.bindReactContext(context)
+      val context = appContext.reactContext ?: return@AsyncFunction false
       val parsed = KmCertoOfferParser.fromJsonPayload(
         payload = payload,
         minimumPerKm = KmCertoRuntime.getMinimumPerKm(context),
       ) ?: return@AsyncFunction false
 
-      KmCertoRuntime.emitOverlayData(parsed)
+      this@KmCertoNativeModule.sendEvent("KmCertoOverlayData", mapOf(
+        "totalFare" to parsed.totalFare,
+        "totalFareLabel" to parsed.totalFareLabel,
+        "status" to parsed.status,
+        "statusColor" to parsed.statusColor,
+        "perKm" to parsed.perKm,
+        "perHour" to (parsed.perHour ?: 0.0),
+        "perMinute" to (parsed.perMinute ?: 0.0),
+        "minimumPerKm" to parsed.minimumPerKm,
+        "sourceApp" to parsed.sourceApp,
+        "rawText" to parsed.rawText
+      ))
       KmCertoOverlayService.show(context, parsed)
       true
     }
@@ -154,19 +152,12 @@ object KmCertoRuntime {
   private const val PREFERENCES_NAME = "kmcerto_native_preferences"
   private const val KEY_MINIMUM_PER_KM = "minimum_per_km"
   private const val KEY_MONITORING_ENABLED = "monitoring_enabled"
-  private const val EVENT_OVERLAY_DATA = "KmCertoOverlayData"
-
-  private var reactContext: ReactContext? = null
 
   val supportedPackages: Map<String, String> = mapOf(
     "br.com.ifood.driver.app" to "iFood",
     "com.app99.driver" to "99Food",
     "com.ubercab.driver" to "Uber",
   )
-
-  fun bindReactContext(context: ReactContext) {
-    reactContext = context
-  }
 
   fun setMinimumPerKm(context: Context, value: Double) {
     context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
@@ -201,23 +192,6 @@ object KmCertoRuntime {
     return supportedPackages.entries.firstOrNull { packageName == it.key || packageName.startsWith("${it.key}:") }
       ?.value
       ?: packageName.substringAfterLast('.')
-  }
-
-  fun emitOverlayData(data: OfferDecisionData) {
-    val emitter = reactContext?.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java) ?: return
-    val payload = Arguments.createMap().apply {
-      putDouble("totalFare", data.totalFare)
-      putString("totalFareLabel", data.totalFareLabel)
-      putString("status", data.status)
-      putString("statusColor", data.statusColor)
-      putDouble("perKm", data.perKm)
-      if (data.perHour != null) putDouble("perHour", data.perHour!!) else putNull("perHour")
-      if (data.perMinute != null) putDouble("perMinute", data.perMinute!!) else putNull("perMinute")
-      putDouble("minimumPerKm", data.minimumPerKm)
-      putString("sourceApp", data.sourceApp)
-      putString("rawText", data.rawText)
-    }
-    emitter.emit(EVENT_OVERLAY_DATA, payload)
   }
 }
 
@@ -399,10 +373,9 @@ class KmCertoAccessibilityService : AccessibilityService() {
     KmCertoLogger.init(this)
     KmCertoLogger.log(this, "SERVICO_CONECTADO — monitorando: ${KmCertoRuntime.supportedPackages.keys}")
     
-    // WakeLock para manter a CPU ativa
     val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
     wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "KmCerto::AccessibilityWakeLock")
-    wakeLock?.acquire(10 * 60 * 1000L /*10 minutes*/)
+    wakeLock?.acquire(10 * 60 * 1000L)
 
     serviceInfo = AccessibilityServiceInfo().apply {
       eventTypes = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
@@ -419,7 +392,6 @@ class KmCertoAccessibilityService : AccessibilityService() {
     val packageName = event?.packageName?.toString() ?: return
     if (!KmCertoRuntime.supportsPackage(packageName) || !KmCertoRuntime.isMonitoringEnabled(this)) return
 
-    // Renova o WakeLock a cada evento
     if (wakeLock?.isHeld == false) wakeLock?.acquire(10 * 60 * 1000L)
 
     val allWindows = windows ?: emptyList()
@@ -477,7 +449,9 @@ class KmCertoAccessibilityService : AccessibilityService() {
 
     lastSignature = signature
     lastEmissionAt = now
-    KmCertoRuntime.emitOverlayData(parsed)
+    
+    // Nota: O envio de evento para o React Native aqui exigiria acesso ao módulo, 
+    // o que é complexo de um Service. O overlay visual já é mostrado abaixo.
     KmCertoOverlayService.show(this, parsed)
   }
 
@@ -533,7 +507,9 @@ object KmCertoLogger {
     try {
       val dir = context.getExternalFilesDir(null) ?: context.filesDir
       logFile = File(dir, LOG_FILE)
-      logFile?.writeText("=== KmCerto Debug Log iniciado em ${Date()} ===\n")
+      if (!logFile!!.exists()) {
+        logFile?.writeText("=== KmCerto Debug Log iniciado em ${Date()} ===\n")
+      }
       lineCount = 0
     } catch (_: Throwable) {}
   }
