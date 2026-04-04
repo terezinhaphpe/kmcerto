@@ -17,6 +17,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import android.text.TextUtils
 import android.util.Log
@@ -210,8 +211,8 @@ object KmCertoRuntime {
       putString("status", data.status)
       putString("statusColor", data.statusColor)
       putDouble("perKm", data.perKm)
-      if (data.perHour != null) putDouble("perHour", data.perHour) else putNull("perHour")
-      if (data.perMinute != null) putDouble("perMinute", data.perMinute) else putNull("perMinute")
+      if (data.perHour != null) putDouble("perHour", data.perHour!!) else putNull("perHour")
+      if (data.perMinute != null) putDouble("perMinute", data.perMinute!!) else putNull("perMinute")
       putDouble("minimumPerKm", data.minimumPerKm)
       putString("sourceApp", data.sourceApp)
       putString("rawText", data.rawText)
@@ -391,11 +392,18 @@ object KmCertoOfferParser {
 class KmCertoAccessibilityService : AccessibilityService() {
   private var lastSignature: String? = null
   private var lastEmissionAt: Long = 0
+  private var wakeLock: PowerManager.WakeLock? = null
 
   override fun onServiceConnected() {
     super.onServiceConnected()
     KmCertoLogger.init(this)
     KmCertoLogger.log(this, "SERVICO_CONECTADO — monitorando: ${KmCertoRuntime.supportedPackages.keys}")
+    
+    // WakeLock para manter a CPU ativa
+    val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+    wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "KmCerto::AccessibilityWakeLock")
+    wakeLock?.acquire(10 * 60 * 1000L /*10 minutes*/)
+
     serviceInfo = AccessibilityServiceInfo().apply {
       eventTypes = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
       feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
@@ -411,44 +419,35 @@ class KmCertoAccessibilityService : AccessibilityService() {
     val packageName = event?.packageName?.toString() ?: return
     if (!KmCertoRuntime.supportsPackage(packageName) || !KmCertoRuntime.isMonitoringEnabled(this)) return
 
-    // ── NOVO: lê TODAS as janelas abertas, não só a janela ativa ──
+    // Renova o WakeLock a cada evento
+    if (wakeLock?.isHeld == false) wakeLock?.acquire(10 * 60 * 1000L)
+
     val allWindows = windows ?: emptyList()
     val windowTexts = mutableListOf<String>()
 
-    // Log de diagnóstico: quantas janelas foram encontradas
     KmCertoLogger.log(this, "EVENTO pkg=$packageName | janelas_total=${allWindows.size} | eventType=${event?.eventType}")
 
     if (allWindows.isEmpty()) {
-      // Fallback: tenta rootInActiveWindow se windows estiver vazio
       val root = rootInActiveWindow
       if (root != null) {
         val text = collectWindowText(root)
         KmCertoLogger.log(this, "FALLBACK rootInActiveWindow | texto_tamanho=${text.length} | texto=$text")
         if (text.isNotBlank()) windowTexts.add(text)
-      } else {
-        KmCertoLogger.log(this, "FALLBACK rootInActiveWindow=NULL — nenhum texto capturado")
       }
     } else {
       for ((index, window) in allWindows.withIndex()) {
-        val winPkg = window.root?.packageName?.toString() ?: "null"
-        val winType = window.type
         val winRoot = window.root
         val winText = if (winRoot != null) collectWindowText(winRoot) else ""
-        KmCertoLogger.log(
-          this,
-          "JANELA[$index] pkg=$winPkg | tipo=$winType | texto_tamanho=${winText.length} | texto=$winText"
-        )
-        if (winText.isNotBlank()) windowTexts.add(winText)
+        if (winText.isNotBlank()) {
+          val winPkg = winRoot?.packageName?.toString() ?: "unknown"
+          KmCertoLogger.log(this, "JANELA[$index] pkg=$winPkg | texto_tamanho=${winText.length} | texto=$winText")
+          windowTexts.add(winText)
+        }
       }
     }
 
     val text = windowTexts.joinToString(" |WIN| ")
-    if (text.isBlank()) {
-      KmCertoLogger.log(this, "TEXTO_FINAL vazio — encerrando sem parse")
-      return
-    }
-
-    KmCertoLogger.log(this, "TEXTO_FINAL tamanho=${text.length} | $text")
+    if (text.isBlank()) return
 
     val minimumPerKm = KmCertoRuntime.getMinimumPerKm(this)
     val parsed = KmCertoOfferParser.parse(
@@ -458,7 +457,9 @@ class KmCertoAccessibilityService : AccessibilityService() {
     )
 
     if (parsed == null) {
-      KmCertoLogger.log(this, "PARSE_FALHOU — R\$ ou km não encontrado no texto acima")
+      if (text.contains("R$") || text.contains("km")) {
+         KmCertoLogger.log(this, "PARSE_FALHOU — R\$ ou km encontrado mas não parseado: $text")
+      }
       return
     }
 
@@ -469,8 +470,6 @@ class KmCertoAccessibilityService : AccessibilityService() {
       parsed.totalFareLabel,
       parsed.status,
       parsed.perKm.toString(),
-      parsed.perHour?.toString() ?: "null",
-      parsed.perMinute?.toString() ?: "null",
     ).joinToString("|")
 
     val now = System.currentTimeMillis()
@@ -482,11 +481,17 @@ class KmCertoAccessibilityService : AccessibilityService() {
     KmCertoOverlayService.show(this, parsed)
   }
 
-  override fun onInterrupt() = Unit
+  override fun onInterrupt() {
+    wakeLock?.let { if (it.isHeld) it.release() }
+  }
+
+  override fun onDestroy() {
+    wakeLock?.let { if (it.isHeld) it.release() }
+    super.onDestroy()
+  }
 
   private fun collectWindowText(root: AccessibilityNodeInfo): String {
     val parts = linkedSetOf<String>()
-
     fun visit(node: AccessibilityNodeInfo?) {
       if (node == null) return
       val text = node.text?.toString()?.trim().orEmpty()
@@ -497,7 +502,6 @@ class KmCertoAccessibilityService : AccessibilityService() {
         visit(node.getChild(index))
       }
     }
-
     visit(root)
     return parts.joinToString(" | ")
   }
@@ -517,7 +521,6 @@ class KmCertoAccessibilityService : AccessibilityService() {
   }
 }
 
-// ── SISTEMA DE LOG — grava tudo em arquivo acessível pelo Termux ──
 object KmCertoLogger {
   private const val TAG = "KmCerto"
   private const val LOG_FILE = "kmcerto_debug.txt"
