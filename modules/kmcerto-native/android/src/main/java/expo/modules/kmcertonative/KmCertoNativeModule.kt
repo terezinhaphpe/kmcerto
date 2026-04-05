@@ -388,18 +388,25 @@ class KmCertoAccessibilityService : AccessibilityService() {
       flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
         AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
         AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
-      notificationTimeout = 50  // era 150ms, agora 50ms = 3x mais rápido
-      packageNames = KmCertoRuntime.supportedPackages.keys.toTypedArray()
+      // SEM filtro de packageNames — monitora todos os apps
+      // O filtro é feito manualmente no onAccessibilityEvent
+      // Isso é necessário pois Uber/99 disparam evento no pkg deles
+      // mas a janela da corrida aparece em outro contexto
+      packageNames = null
     }
   }
 
   override fun onAccessibilityEvent(event: AccessibilityEvent?) {
     val packageName = event?.packageName?.toString() ?: return
-    if (!KmCertoRuntime.supportsPackage(packageName) || !KmCertoRuntime.isMonitoringEnabled(this)) return
+    if (!KmCertoRuntime.isMonitoringEnabled(this)) return
+
+    // Só processa se o evento vier de um app suportado
+    if (!KmCertoRuntime.supportsPackage(packageName)) return
 
     if (wakeLock?.isHeld == false) wakeLock?.acquire(10 * 60 * 1000L)
 
-    // Lê TODAS as janelas abertas (inclui overlays da Uber/99)
+    // Lê TODAS as janelas abertas sem filtrar por pacote
+    // A corrida da Uber/99 pode aparecer em janela do systemui ou outra
     val allWindows = windows ?: emptyList()
     val windowTexts = mutableListOf<String>()
 
@@ -420,6 +427,7 @@ class KmCertoAccessibilityService : AccessibilityService() {
         val winPkg = winRoot.packageName?.toString() ?: "?"
         val winText = collectWindowText(winRoot)
         KmCertoLogger.log(this, "WIN[$i] pkg=$winPkg | tamanho=${winText.length} | $winText")
+        // Lê TODAS as janelas — inclusive systemui e launcher
         if (winText.isNotBlank()) windowTexts.add(winText)
       }
     }
