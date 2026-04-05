@@ -2,16 +2,23 @@ package expo.modules.kmcertonative
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
+import android.media.ImageReader
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -20,6 +27,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.text.TextUtils
+import android.util.DisplayMetrics
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
@@ -28,6 +36,9 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import org.json.JSONObject
@@ -115,6 +126,21 @@ class KmCertoNativeModule : Module() {
     AsyncFunction("isMonitoringActive") {
       val context = appContext.reactContext ?: return@AsyncFunction false
       KmCertoRuntime.isMonitoringEnabled(context)
+    }
+
+    AsyncFunction("hasScreenCapturePermission") {
+      KmCertoScreenCapture.hasPermission()
+    }
+
+    AsyncFunction("requestScreenCapturePermission") {
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      try {
+        val intent = Intent(context, KmCertoPermissionActivity::class.java).apply {
+          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+        true
+      } catch (_: Throwable) { false }
     }
 
     AsyncFunction("startMonitoring") {
@@ -434,16 +460,13 @@ class KmCertoAccessibilityService : AccessibilityService() {
   override fun onAccessibilityEvent(event: AccessibilityEvent?) {
     val packageName = event?.packageName?.toString() ?: return
     if (!KmCertoRuntime.isMonitoringEnabled(this)) return
-
-    // Só processa se o evento vier de um app suportado
     if (!KmCertoRuntime.supportsPackage(packageName)) return
 
     if (wakeLock?.isHeld == false) wakeLock?.acquire(10 * 60 * 1000L)
 
-    // Lê TODAS as janelas abertas sem filtrar por pacote
-    // A corrida da Uber/99 pode aparecer em janela do systemui ou outra
     val allWindows = windows ?: emptyList()
     val windowTexts = mutableListOf<String>()
+    var foundEmptyAppWindow = false
 
     KmCertoLogger.log(this, "EVENTO pkg=$packageName | janelas=${allWindows.size} | tipo=${event.eventType}")
 
@@ -453,8 +476,6 @@ class KmCertoAccessibilityService : AccessibilityService() {
         val text = collectWindowText(root)
         KmCertoLogger.log(this, "FALLBACK | tamanho=${text.length} | $text")
         if (text.isNotBlank()) windowTexts.add(text)
-      } else {
-        KmCertoLogger.log(this, "FALLBACK NULL — nenhum texto")
       }
     } else {
       for ((i, window) in allWindows.withIndex()) {
@@ -462,30 +483,56 @@ class KmCertoAccessibilityService : AccessibilityService() {
         val winPkg = winRoot.packageName?.toString() ?: "?"
         val winText = collectWindowText(winRoot)
         KmCertoLogger.log(this, "WIN[$i] pkg=$winPkg | tamanho=${winText.length} | $winText")
-        // Lê TODAS as janelas — inclusive systemui e launcher
-        if (winText.isNotBlank()) windowTexts.add(winText)
+        if (winText.isNotBlank()) {
+          windowTexts.add(winText)
+        } else if (KmCertoRuntime.supportsPackage(winPkg)) {
+          // Janela do app suportado mas vazia = popup de corrida em Canvas
+          foundEmptyAppWindow = true
+        }
       }
     }
 
     val text = windowTexts.joinToString(" |W| ")
-    if (text.isBlank()) return
-
     val minimumPerKm = KmCertoRuntime.getMinimumPerKm(this)
-    val parsed = KmCertoOfferParser.parse(text, minimumPerKm, packageName)
 
-    if (parsed == null) {
-      if (text.contains("R$") || text.contains("km", ignoreCase = true)) {
-        KmCertoLogger.log(this, "PARSE_FALHOU — tinha R\$/km mas não parseou: $text")
-      }
+    // Tenta parsear pelo texto de acessibilidade primeiro (iFood funciona assim)
+    val parsed = if (text.isNotBlank()) {
+      KmCertoOfferParser.parse(text, minimumPerKm, packageName)
+    } else null
+
+    if (parsed != null) {
+      // iFood — funcionou via AccessibilityService normal
+      KmCertoLogger.log(this, "PARSE_OK(accessibility) ${parsed.totalFareLabel} | ${parsed.distanceKm}km | ${parsed.status}")
+      emitAndShow(parsed, packageName)
       return
     }
 
-    KmCertoLogger.log(this, "PARSE_OK ${parsed.totalFareLabel} | ${parsed.distanceKm}km | R\$${parsed.perKm}/km | ${parsed.status}")
+    // 99/Uber — janela vazia, tenta OCR via screenshot
+    if (foundEmptyAppWindow || (text.isBlank() && allWindows.isNotEmpty())) {
+      KmCertoLogger.log(this, "OCR_TENTATIVA pkg=$packageName — janela vazia, iniciando captura de tela")
+      if (KmCertoScreenCapture.hasPermission()) {
+        KmCertoScreenCapture.captureAndOcr(this) { ocrText ->
+          KmCertoLogger.log(this, "OCR_RESULTADO tamanho=${ocrText.length} | $ocrText")
+          val ocrParsed = KmCertoOfferParser.parse(ocrText, minimumPerKm, packageName)
+          if (ocrParsed != null) {
+            KmCertoLogger.log(this, "PARSE_OK(ocr) ${ocrParsed.totalFareLabel} | ${ocrParsed.distanceKm}km | ${ocrParsed.status}")
+            emitAndShow(ocrParsed, packageName)
+          } else {
+            KmCertoLogger.log(this, "OCR_PARSE_FALHOU — texto OCR não contém corrida válida")
+          }
+        }
+      } else {
+        KmCertoLogger.log(this, "OCR_SEM_PERMISSAO — peça permissão de gravação de tela no app")
+      }
+    } else if (text.isNotBlank() && (text.contains("R$") || text.contains("km", ignoreCase = true))) {
+      KmCertoLogger.log(this, "PARSE_FALHOU — tinha R\$/km mas não parseou: $text")
+    }
+  }
 
+  private fun emitAndShow(parsed: OfferDecisionData, packageName: String) {
     val signature = "${packageName}|${parsed.totalFareLabel}|${parsed.perKm}"
     val now = System.currentTimeMillis()
     if (signature == lastSignature && now - lastEmissionAt < 3500) return
-
     lastSignature = signature
     lastEmissionAt = now
     KmCertoOverlayService.show(this, parsed)
@@ -528,6 +575,121 @@ class KmCertoAccessibilityService : AccessibilityService() {
         any { it.equals(expected, ignoreCase = true) }
       }
     }
+  }
+}
+
+// ── CAPTURA DE TELA + OCR para Uber/99 ──
+object KmCertoScreenCapture {
+  private var mediaProjection: MediaProjection? = null
+  private var resultCode: Int = Activity.RESULT_CANCELED
+  private var resultData: Intent? = null
+  private val handler = Handler(Looper.getMainLooper())
+  private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+
+  fun hasPermission(): Boolean = resultData != null && resultCode == Activity.RESULT_OK
+
+  fun setPermission(code: Int, data: Intent?) {
+    resultCode = code
+    resultData = data
+  }
+
+  fun captureAndOcr(context: Context, callback: (String) -> Unit) {
+    val data = resultData ?: run { callback(""); return }
+    if (resultCode != Activity.RESULT_OK) { callback(""); return }
+
+    try {
+      val mgr = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+      val projection = mgr.getMediaProjection(resultCode, data)
+      mediaProjection = projection
+
+      val metrics = context.resources.displayMetrics
+      val width = metrics.widthPixels
+      val height = metrics.heightPixels
+      val density = metrics.densityDpi
+
+      val imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+
+      val virtualDisplay = projection.createVirtualDisplay(
+        "KmCertoCapture",
+        width, height, density,
+        DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+        imageReader.surface, null, handler
+      )
+
+      // Aguarda 300ms para tela renderizar completamente
+      handler.postDelayed({
+        try {
+          val image = imageReader.acquireLatestImage()
+          if (image != null) {
+            val planes = image.planes
+            val buffer = planes[0].buffer
+            val pixelStride = planes[0].pixelStride
+            val rowStride = planes[0].rowStride
+            val rowPadding = rowStride - pixelStride * width
+            val bitmap = Bitmap.createBitmap(
+              width + rowPadding / pixelStride, height,
+              Bitmap.Config.ARGB_8888
+            )
+            bitmap.copyPixelsFromBuffer(buffer)
+            image.close()
+
+            // Corta só a metade superior da tela (onde fica o popup de corrida)
+            val croppedBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height / 2)
+            bitmap.recycle()
+
+            val inputImage = InputImage.fromBitmap(croppedBitmap, 0)
+            recognizer.process(inputImage)
+              .addOnSuccessListener { result ->
+                croppedBitmap.recycle()
+                virtualDisplay.release()
+                projection.stop()
+                mediaProjection = null
+                callback(result.text)
+              }
+              .addOnFailureListener {
+                croppedBitmap.recycle()
+                virtualDisplay.release()
+                projection.stop()
+                mediaProjection = null
+                callback("")
+              }
+          } else {
+            virtualDisplay.release()
+            projection.stop()
+            mediaProjection = null
+            callback("")
+          }
+        } catch (e: Throwable) {
+          virtualDisplay.release()
+          projection.stop()
+          mediaProjection = null
+          callback("")
+        }
+      }, 300)
+    } catch (e: Throwable) {
+      callback("")
+    }
+  }
+}
+
+// Activity transparente para pedir permissão de gravação de tela
+class KmCertoPermissionActivity : Activity() {
+  override fun onCreate(savedInstanceState: android.os.Bundle?) {
+    super.onCreate(savedInstanceState)
+    val mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+    startActivityForResult(mgr.createScreenCaptureIntent(), REQUEST_CODE)
+  }
+
+  override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+    super.onActivityResult(requestCode, resultCode, data)
+    if (requestCode == REQUEST_CODE) {
+      KmCertoScreenCapture.setPermission(resultCode, data)
+    }
+    finish()
+  }
+
+  companion object {
+    private const val REQUEST_CODE = 1001
   }
 }
 
