@@ -7,6 +7,7 @@ export type KmCertoPermissionStatus = {
   overlayGranted: boolean;
   accessibilityGranted: boolean;
   batteryOptimizationIgnored: boolean;
+  screenCaptureGranted: boolean;
 };
 
 export type KmCertoOverlayPayload = {
@@ -46,6 +47,8 @@ async function callBooleanMethod(method: keyof Pick<
   | "isOverlayPermissionGranted"
   | "isAccessibilityServiceEnabled"
   | "isBatteryOptimizationIgnored"
+  | "hasScreenCapturePermission"
+  | "requestScreenCapturePermission"
   | "openOverlaySettings"
   | "openAccessibilitySettings"
   | "openBatteryOptimizationSettings"
@@ -69,16 +72,27 @@ async function callBooleanMethod(method: keyof Pick<
 
 export async function getPermissionStatus(): Promise<KmCertoPermissionStatus> {
   if (Platform.OS !== "android") {
-    return { overlayGranted: false, accessibilityGranted: false, batteryOptimizationIgnored: false };
+    return { 
+      overlayGranted: false, 
+      accessibilityGranted: false, 
+      batteryOptimizationIgnored: false,
+      screenCaptureGranted: false
+    };
   }
 
-  const [overlayGranted, accessibilityGranted, batteryOptimizationIgnored] = await Promise.all([
+  const [overlayGranted, accessibilityGranted, batteryOptimizationIgnored, screenCaptureGranted] = await Promise.all([
     callBooleanMethod("isOverlayPermissionGranted"),
     callBooleanMethod("isAccessibilityServiceEnabled"),
     callBooleanMethod("isBatteryOptimizationIgnored"),
+    callBooleanMethod("hasScreenCapturePermission"),
   ]);
 
-  return { overlayGranted, accessibilityGranted, batteryOptimizationIgnored };
+  return { 
+    overlayGranted, 
+    accessibilityGranted, 
+    batteryOptimizationIgnored,
+    screenCaptureGranted
+  };
 }
 
 export function openOverlaySettings() {
@@ -91,6 +105,10 @@ export function openAccessibilitySettings() {
 
 export function openBatteryOptimizationSettings() {
   return callBooleanMethod("openBatteryOptimizationSettings");
+}
+
+export function requestScreenCapturePermission() {
+  return callBooleanMethod("requestScreenCapturePermission");
 }
 
 export function startMonitoring() {
