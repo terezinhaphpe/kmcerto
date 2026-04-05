@@ -98,7 +98,7 @@ class KmCertoNativeModule : Module() {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
         pm.isIgnoringBatteryOptimizations(context.packageName)
       } else {
-        true // Abaixo do Android 6 não existe otimização de bateria
+        true
       }
     }
 
@@ -314,8 +314,8 @@ object KmCertoOfferParser {
   private val currencyRegex = Regex("""R\$\s*([0-9]{1,4}(?:[.][0-9]{3})*(?:,[0-9]{2})|[0-9]+(?:[.,][0-9]{1,2})?)""")
   private val kmRegex = Regex("""(\d{1,3}(?:[.,]\d{1,2})?)\s?km\b""", RegexOption.IGNORE_CASE)
   private val minuteRegex = Regex("""(\d{1,3})\s?min(?:uto)?s?\b""", RegexOption.IGNORE_CASE)
-  private val explicitTotalKmRegex = Regex("""(?:dist[âa]ncia\s+total|distancia\s+total)\s*[:\-]?\s*(\d{1,3}(?:[.,]\d{1,2})?)\s?km""", RegexOption.IGNORE_CASE)
-  private val explicitTotalMinutesRegex = Regex("""(?:tempo\s+(?:total|aproximado)|tempo)\s*[:\-]?\s*(\d{1,3})\s?min(?:uto)?s?\b""", RegexOption.IGNORE_CASE)
+  private val explicitTotalKmRegex = Regex("""(?:dist[âa]ncia\s+total|total)\s*(\d{1,3}(?:[.,]\d{1,2})?)\s?km""", RegexOption.IGNORE_CASE)
+  private val explicitTotalMinutesRegex = Regex("""(?:tempo\s+total|total)\s*(\d{1,3})\s?min(?:uto)?s?\b""", RegexOption.IGNORE_CASE)
 
   fun parse(rawText: String, minimumPerKm: Double, sourcePackage: String): OfferDecisionData? {
     val normalizedText = rawText.replace("\n", " ").replace(Regex("\\s+"), " ").trim()
@@ -358,7 +358,7 @@ object KmCertoOfferParser {
       minimumPerKm = round2(minimumPerKm),
       sourceApp = KmCertoRuntime.sourceLabel(sourcePackage),
       rawText = normalizedText,
-      distanceKm = round2(distance),
+      distanceKm = round2(distance)
     )
   }
 
@@ -383,6 +383,7 @@ object KmCertoOfferParser {
         minimumPerKm = json.optDouble("minimumPerKm", minimumPerKm),
         sourceApp = json.optString("sourceApp", "Teste manual"),
         rawText = json.optString("rawText", ""),
+        distanceKm = if (json.has("distanceKm")) json.optDouble("distanceKm") else null
       )
     } catch (_: Throwable) {
       null
@@ -391,12 +392,13 @@ object KmCertoOfferParser {
 
   private fun selectDistance(values: List<Double>): Double? {
     if (values.isEmpty()) return null
-    // Filtra valores impossíveis (< 0.1 ou > 200 km)
-    val valid = values.filter { it in 0.1..200.0 }
-    if (valid.isEmpty()) return null
-    // Pega o MENOR valor — a distância real da corrida
-    // (o iFood mostra "3,37 km" real e às vezes outros números maiores no mapa)
-    return round2(valid.min())
+    if (values.size == 1) return values.first()
+    val firstTwo = values.take(2)
+    val sum = firstTwo.sum()
+    return when {
+      sum in 0.5..100.0 -> round2(sum)
+      else -> values.maxByOrNull { it.absoluteValue }
+    }
   }
 
   private fun selectMinutes(values: List<Double>): Double? {
@@ -441,25 +443,19 @@ class KmCertoAccessibilityService : AccessibilityService() {
     wakeLock?.acquire(10 * 60 * 1000L)
 
     serviceInfo = AccessibilityServiceInfo().apply {
-      eventTypes = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
-        AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
-        AccessibilityEvent.TYPE_WINDOWS_CHANGED
+      eventTypes = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
       feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
       flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
         AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
         AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
-      // SEM filtro de packageNames — monitora todos os apps
-      // O filtro é feito manualmente no onAccessibilityEvent
-      // Isso é necessário pois Uber/99 disparam evento no pkg deles
-      // mas a janela da corrida aparece em outro contexto
-      packageNames = null
+      notificationTimeout = 150
+      packageNames = KmCertoRuntime.supportedPackages.keys.toTypedArray()
     }
   }
 
   override fun onAccessibilityEvent(event: AccessibilityEvent?) {
     val packageName = event?.packageName?.toString() ?: return
-    if (!KmCertoRuntime.isMonitoringEnabled(this)) return
-    if (!KmCertoRuntime.supportsPackage(packageName)) return
+    if (!KmCertoRuntime.supportsPackage(packageName) || !KmCertoRuntime.isMonitoringEnabled(this)) return
 
     if (wakeLock?.isHeld == false) wakeLock?.acquire(10 * 60 * 1000L)
 
@@ -467,46 +463,31 @@ class KmCertoAccessibilityService : AccessibilityService() {
     val windowTexts = mutableListOf<String>()
     var foundEmptyAppWindow = false
 
-    KmCertoLogger.log(this, "EVENTO pkg=$packageName | janelas=${allWindows.size} | tipo=${event.eventType}")
-
-    if (allWindows.isEmpty()) {
-      val root = rootInActiveWindow
-      if (root != null) {
-        val text = collectWindowText(root)
-        KmCertoLogger.log(this, "FALLBACK | tamanho=${text.length} | $text")
-        if (text.isNotBlank()) windowTexts.add(text)
-      }
-    } else {
-      for ((i, window) in allWindows.withIndex()) {
-        val winRoot = window.root ?: continue
-        val winPkg = winRoot.packageName?.toString() ?: "?"
-        val winText = collectWindowText(winRoot)
-        KmCertoLogger.log(this, "WIN[$i] pkg=$winPkg | tamanho=${winText.length} | $winText")
-        if (winText.isNotBlank()) {
-          windowTexts.add(winText)
-        } else if (KmCertoRuntime.supportsPackage(winPkg)) {
-          // Janela do app suportado mas vazia = popup de corrida em Canvas
-          foundEmptyAppWindow = true
+    for (window in allWindows) {
+      val winRoot = window.root
+      if (winRoot != null) {
+        val winPkg = winRoot.packageName?.toString() ?: ""
+        if (winPkg == packageName) {
+          val winText = collectWindowText(winRoot)
+          if (winText.isNotBlank()) {
+            windowTexts.add(winText)
+          } else {
+            foundEmptyAppWindow = true
+          }
         }
       }
     }
 
-    val text = windowTexts.joinToString(" |W| ")
+    val text = windowTexts.joinToString(" | ")
     val minimumPerKm = KmCertoRuntime.getMinimumPerKm(this)
-
-    // Tenta parsear pelo texto de acessibilidade primeiro (iFood funciona assim)
-    val parsed = if (text.isNotBlank()) {
-      KmCertoOfferParser.parse(text, minimumPerKm, packageName)
-    } else null
+    val parsed = KmCertoOfferParser.parse(text, minimumPerKm, packageName)
 
     if (parsed != null) {
-      // iFood — funcionou via AccessibilityService normal
       KmCertoLogger.log(this, "PARSE_OK(accessibility) ${parsed.totalFareLabel} | ${parsed.distanceKm}km | ${parsed.status}")
       emitAndShow(parsed, packageName)
       return
     }
 
-    // 99/Uber — janela vazia, tenta OCR via screenshot
     if (foundEmptyAppWindow || (text.isBlank() && allWindows.isNotEmpty())) {
       KmCertoLogger.log(this, "OCR_TENTATIVA pkg=$packageName — janela vazia, iniciando captura de tela")
       if (KmCertoScreenCapture.hasPermission()) {
@@ -577,7 +558,6 @@ class KmCertoAccessibilityService : AccessibilityService() {
   }
 }
 
-// ── CAPTURA DE TELA + OCR para Uber/99 ──
 object KmCertoScreenCapture {
   private var mediaProjection: MediaProjection? = null
   private var resultCode: Int = Activity.RESULT_CANCELED
@@ -598,7 +578,7 @@ object KmCertoScreenCapture {
 
     try {
       val mgr = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-      val projection = mgr.getMediaProjection(resultCode, data)
+      val projection = mgr.getMediaProjection(resultCode, data) ?: run { callback(""); return }
       mediaProjection = projection
 
       val metrics = context.resources.displayMetrics
@@ -613,9 +593,13 @@ object KmCertoScreenCapture {
         width, height, density,
         DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
         imageReader.surface, null, handler
-      )
+      ) ?: run {
+        projection.stop()
+        mediaProjection = null
+        callback("")
+        return
+      }
 
-      // Aguarda 300ms para tela renderizar completamente
       handler.postDelayed({
         try {
           val image = imageReader.acquireLatestImage()
@@ -632,7 +616,6 @@ object KmCertoScreenCapture {
             bitmap.copyPixelsFromBuffer(buffer)
             image.close()
 
-            // Corta só a metade superior da tela (onde fica o popup de corrida)
             val croppedBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height / 2)
             bitmap.recycle()
 
@@ -671,7 +654,6 @@ object KmCertoScreenCapture {
   }
 }
 
-// Activity transparente para pedir permissão de gravação de tela
 class KmCertoPermissionActivity : Activity() {
   override fun onCreate(savedInstanceState: android.os.Bundle?) {
     super.onCreate(savedInstanceState)
@@ -855,24 +837,10 @@ class KmCertoOverlayService : Service() {
     metricRow.addView(createMetricText("R$/km", data.perKm))
     data.perHour?.let { metricRow.addView(createMetricText("R$/hr", it)) }
     data.perMinute?.let { metricRow.addView(createMetricText("R$/min", it)) }
-
-    val kmTotalText = data.distanceKm?.let {
-      TextView(this).apply {
-        text = String.format(Locale("pt", "BR"), "%.2f km", it)
-        setTextColor(Color.parseColor("#CFCFD4"))
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-        gravity = Gravity.CENTER_HORIZONTAL
-      }
-    }
-
     container.addView(statusText)
     container.addView(spaceView(dp(10)))
     container.addView(fareText)
-    if (kmTotalText != null) {
-      container.addView(spaceView(dp(2)))
-      container.addView(kmTotalText)
-    }
-    container.addView(spaceView(dp(4)))
+    container.addView(spaceView(dp(6)))
     container.addView(sourceText)
     container.addView(spaceView(dp(14)))
     container.addView(metricRow)
