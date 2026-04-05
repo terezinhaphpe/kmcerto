@@ -18,3 +18,8 @@ android {
     abortOnError false
   }
 }
+
+dependencies {
+  // ML Kit OCR — reconhecimento de texto offline, sem internet
+  implementation 'com.google.mlkit:text-recognition:16.0.1'
+}
