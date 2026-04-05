@@ -12,6 +12,7 @@ import {
   openAccessibilitySettings,
   openBatteryOptimizationSettings,
   openOverlaySettings,
+  requestScreenCapturePermission,
   startMonitoring,
   subscribeToOverlayUpdates,
   type KmCertoOverlayPayload,
@@ -26,6 +27,7 @@ export default function HomeScreen() {
   const [overlayGranted, setOverlayGranted] = useState(false);
   const [accessibilityGranted, setAccessibilityGranted] = useState(false);
   const [batteryIgnored, setBatteryIgnored] = useState(false);
+  const [screenCaptureGranted, setScreenCaptureGranted] = useState(false);
   const [monitoringActive, setMonitoringActive] = useState(false);
   const [minimumPerKm, setMinimumPerKm] = useState(1.5);
   const [lastOverlay, setLastOverlay] = useState<KmCertoOverlayPayload | null>(null);
@@ -42,6 +44,7 @@ export default function HomeScreen() {
       setOverlayGranted(permissionStatus.overlayGranted);
       setAccessibilityGranted(permissionStatus.accessibilityGranted);
       setBatteryIgnored(permissionStatus.batteryOptimizationIgnored);
+      setScreenCaptureGranted(permissionStatus.screenCaptureGranted);
       setMonitoringActive(monitoring);
       setMinimumPerKm(minimum);
 
@@ -121,6 +124,11 @@ export default function HomeScreen() {
             description="Impede que o Android encerre o serviço em segundo plano. Essencial para funcionamento contínuo."
             enabled={batteryIgnored}
           />
+          <PermissionRow
+            title="Captura de Tela (OCR)"
+            description="Necessária para ler Uber e 99 quando a acessibilidade falha. Ative antes de começar a trabalhar."
+            enabled={screenCaptureGranted}
+          />
           {monitoringActive ? (
             <PermissionRow
               title="Monitoramento"
@@ -163,6 +171,12 @@ export default function HomeScreen() {
           {!batteryIgnored ? (
             <TouchableOpacity style={styles.warningButton} onPress={() => void openBatteryOptimizationSettings()} disabled={!automaticModeAvailable}>
               <Text style={styles.warningButtonText}>Desativar otimização de bateria</Text>
+            </TouchableOpacity>
+          ) : null}
+
+          {!screenCaptureGranted ? (
+            <TouchableOpacity style={styles.primaryButton} onPress={() => void requestScreenCapturePermission()} disabled={!automaticModeAvailable}>
+              <Text style={styles.primaryButtonText}>Ativar Captura de Tela (OCR)</Text>
             </TouchableOpacity>
           ) : null}
 
@@ -248,42 +262,41 @@ const styles = StyleSheet.create({
   },
   eyebrow: {
     color: "#F5D400",
-    fontSize: 13,
-    fontWeight: "800",
-    letterSpacing: 1,
+    fontSize: 14,
+    fontWeight: "bold",
     textTransform: "uppercase",
+    letterSpacing: 1,
   },
   heroTitle: {
-    color: "#FFFFFF",
-    fontSize: 28,
-    lineHeight: 35,
-    fontWeight: "800",
+    color: "white",
+    fontSize: 20,
+    fontWeight: "bold",
+    lineHeight: 28,
   },
   heroDescription: {
-    color: "#CFCFD4",
-    fontSize: 15,
-    lineHeight: 22,
+    color: "#9CA3AF",
+    fontSize: 14,
+    lineHeight: 20,
   },
   activeIndicator: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    backgroundColor: "#16A34A20",
+    backgroundColor: "rgba(22, 163, 74, 0.1)",
+    padding: 10,
     borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
     marginTop: 4,
   },
   activeDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
     backgroundColor: "#16A34A",
   },
   activeText: {
     color: "#16A34A",
-    fontSize: 13,
-    fontWeight: "700",
+    fontSize: 12,
+    fontWeight: "600",
   },
   section: {
     gap: 12,
@@ -294,68 +307,66 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   sectionTitle: {
-    color: "#FFFFFF",
-    fontSize: 18,
-    fontWeight: "800",
+    color: "white",
+    fontSize: 16,
+    fontWeight: "bold",
   },
   metricsRow: {
     flexDirection: "row",
     gap: 12,
-    flexWrap: "wrap",
   },
   supportedApps: {
-    color: "#CFCFD4",
-    fontSize: 13,
-    lineHeight: 19,
+    color: "#6B7280",
+    fontSize: 12,
   },
   primaryButton: {
     backgroundColor: "#F5D400",
-    borderRadius: 18,
-    paddingVertical: 16,
-    paddingHorizontal: 18,
+    padding: 16,
+    borderRadius: 16,
     alignItems: "center",
   },
   primaryButtonText: {
-    color: "#101114",
+    color: "black",
     fontSize: 16,
-    fontWeight: "800",
+    fontWeight: "bold",
   },
   warningButton: {
-    backgroundColor: "#DC2626",
-    borderRadius: 18,
-    paddingVertical: 16,
-    paddingHorizontal: 18,
+    backgroundColor: "rgba(245, 212, 0, 0.1)",
+    padding: 16,
+    borderRadius: 16,
     alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#F5D400",
   },
   warningButtonText: {
-    color: "#FFFFFF",
+    color: "#F5D400",
     fontSize: 16,
-    fontWeight: "800",
+    fontWeight: "bold",
   },
   secondaryButton: {
     backgroundColor: "#1D2026",
-    borderRadius: 18,
-    paddingVertical: 16,
-    paddingHorizontal: 18,
+    padding: 16,
+    borderRadius: 16,
     alignItems: "center",
     borderWidth: 1,
     borderColor: "#2D313A",
   },
   secondaryButtonText: {
-    color: "#FFFFFF",
-    fontSize: 15,
-    fontWeight: "700",
+    color: "white",
+    fontSize: 16,
+    fontWeight: "600",
   },
   platformWarning: {
-    color: "#F5D400",
-    fontSize: 13,
-    lineHeight: 19,
+    color: "#9CA3AF",
+    fontSize: 12,
+    textAlign: "center",
+    marginTop: 8,
   },
   lastResultCard: {
     backgroundColor: "#1D2026",
     borderRadius: 24,
-    padding: 18,
-    gap: 12,
+    padding: 20,
+    gap: 16,
     borderWidth: 1,
     borderColor: "#2D313A",
   },
@@ -363,68 +374,70 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    gap: 12,
   },
   lastResultLabel: {
-    color: "#CFCFD4",
+    color: "#9CA3AF",
     fontSize: 14,
-    fontWeight: "700",
-    flex: 1,
+    fontWeight: "600",
   },
   statusBadge: {
-    borderRadius: 999,
     paddingHorizontal: 12,
-    paddingVertical: 7,
+    paddingVertical: 6,
+    borderRadius: 10,
   },
   acceptBadge: {
-    backgroundColor: "#16A34A",
+    backgroundColor: "rgba(22, 163, 74, 0.2)",
   },
   rejectBadge: {
-    backgroundColor: "#DC2626",
+    backgroundColor: "rgba(220, 38, 38, 0.2)",
   },
   statusBadgeText: {
-    color: "#FFFFFF",
     fontSize: 12,
-    fontWeight: "800",
+    fontWeight: "bold",
+    color: "white",
   },
   lastFare: {
-    color: "#FFFFFF",
-    fontSize: 30,
-    fontWeight: "800",
+    color: "white",
+    fontSize: 36,
+    fontWeight: "bold",
   },
   emptyState: {
     backgroundColor: "#1D2026",
     borderRadius: 24,
+    padding: 30,
+    alignItems: "center",
+    borderStyle: "dashed",
     borderWidth: 1,
     borderColor: "#2D313A",
-    padding: 18,
   },
   emptyStateText: {
-    color: "#CFCFD4",
+    color: "#6B7280",
     fontSize: 14,
+    textAlign: "center",
     lineHeight: 20,
   },
   footerCard: {
-    backgroundColor: "#15171C",
+    backgroundColor: "rgba(245, 212, 0, 0.05)",
     borderRadius: 24,
-    padding: 18,
-    gap: 10,
+    padding: 20,
+    gap: 8,
     borderWidth: 1,
-    borderColor: "#2D313A",
+    borderColor: "rgba(245, 212, 0, 0.1)",
+    marginBottom: 20,
   },
   footerTitle: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "800",
+    color: "#F5D400",
+    fontSize: 14,
+    fontWeight: "bold",
   },
   footerText: {
-    color: "#CFCFD4",
-    fontSize: 14,
-    lineHeight: 21,
+    color: "#9CA3AF",
+    fontSize: 13,
+    lineHeight: 20,
   },
   footerStrong: {
-    color: "#FFFFFF",
-    fontWeight: "800",
+    color: "white",
+    fontWeight: "bold",
   },
   acceptText: {
     color: "#16A34A",
