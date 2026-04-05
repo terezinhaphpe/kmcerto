@@ -220,7 +220,7 @@ data class OfferDecisionData(
       put("minimumPerKm", minimumPerKm)
       put("sourceApp", sourceApp)
       put("rawText", rawText)
-      put("distanceKm", distanceKm)
+      if (distanceKm != null) put("distanceKm", distanceKm)
     }.toString()
   }
 
@@ -254,8 +254,8 @@ object KmCertoOfferParser {
   private val currencyRegex = Regex("""R\$\s*([0-9]{1,4}(?:[.][0-9]{3})*(?:,[0-9]{2})|[0-9]+(?:[.,][0-9]{1,2})?)""")
   private val kmRegex = Regex("""(\d{1,3}(?:[.,]\d{1,2})?)\s?km\b""", RegexOption.IGNORE_CASE)
   private val minuteRegex = Regex("""(\d{1,3})\s?min(?:uto)?s?\b""", RegexOption.IGNORE_CASE)
-  private val explicitTotalKmRegex = Regex("""(?:dist[âa]ncia\s+total|total)\s*(\d{1,3}(?:[.,]\d{1,2})?)\s?km""", RegexOption.IGNORE_CASE)
-  private val explicitTotalMinutesRegex = Regex("""(?:tempo\s+total|total)\s*(\d{1,3})\s?min(?:uto)?s?\b""", RegexOption.IGNORE_CASE)
+  private val explicitTotalKmRegex = Regex("""(?:dist[âa]ncia\s+total|distancia\s+total)\s*[:\-]?\s*(\d{1,3}(?:[.,]\d{1,2})?)\s?km""", RegexOption.IGNORE_CASE)
+  private val explicitTotalMinutesRegex = Regex("""(?:tempo\s+(?:total|aproximado)|tempo)\s*[:\-]?\s*(\d{1,3})\s?min(?:uto)?s?\b""", RegexOption.IGNORE_CASE)
 
   fun parse(rawText: String, minimumPerKm: Double, sourcePackage: String): OfferDecisionData? {
     val normalizedText = rawText.replace("\n", " ").replace(Regex("\\s+"), " ").trim()
@@ -331,13 +331,12 @@ object KmCertoOfferParser {
 
   private fun selectDistance(values: List<Double>): Double? {
     if (values.isEmpty()) return null
-    if (values.size == 1) return values.first()
-    val firstTwo = values.take(2)
-    val sum = firstTwo.sum()
-    return when {
-      sum in 0.5..100.0 -> round2(sum)
-      else -> values.maxByOrNull { it.absoluteValue }
-    }
+    // Filtra valores impossíveis (< 0.1 ou > 200 km)
+    val valid = values.filter { it in 0.1..200.0 }
+    if (valid.isEmpty()) return null
+    // Pega o MENOR valor — a distância real da corrida
+    // (o iFood mostra "3,37 km" real e às vezes outros números maiores no mapa)
+    return round2(valid.min())
   }
 
   private fun selectMinutes(values: List<Double>): Double? {
@@ -382,12 +381,14 @@ class KmCertoAccessibilityService : AccessibilityService() {
     wakeLock?.acquire(10 * 60 * 1000L)
 
     serviceInfo = AccessibilityServiceInfo().apply {
-      eventTypes = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+      eventTypes = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
+        AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+        AccessibilityEvent.TYPE_WINDOWS_CHANGED
       feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
       flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
         AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
         AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
-      notificationTimeout = 150
+      notificationTimeout = 50  // era 150ms, agora 50ms = 3x mais rápido
       packageNames = KmCertoRuntime.supportedPackages.keys.toTypedArray()
     }
   }
@@ -398,64 +399,52 @@ class KmCertoAccessibilityService : AccessibilityService() {
 
     if (wakeLock?.isHeld == false) wakeLock?.acquire(10 * 60 * 1000L)
 
+    // Lê TODAS as janelas abertas (inclui overlays da Uber/99)
     val allWindows = windows ?: emptyList()
     val windowTexts = mutableListOf<String>()
 
-    KmCertoLogger.log(this, "EVENTO pkg=$packageName | janelas_total=${allWindows.size} | eventType=${event?.eventType}")
+    KmCertoLogger.log(this, "EVENTO pkg=$packageName | janelas=${allWindows.size} | tipo=${event.eventType}")
 
     if (allWindows.isEmpty()) {
       val root = rootInActiveWindow
       if (root != null) {
         val text = collectWindowText(root)
-        KmCertoLogger.log(this, "FALLBACK rootInActiveWindow | texto_tamanho=${text.length} | texto=$text")
+        KmCertoLogger.log(this, "FALLBACK | tamanho=${text.length} | $text")
         if (text.isNotBlank()) windowTexts.add(text)
+      } else {
+        KmCertoLogger.log(this, "FALLBACK NULL — nenhum texto")
       }
     } else {
-      for ((index, window) in allWindows.withIndex()) {
-        val winRoot = window.root
-        val winText = if (winRoot != null) collectWindowText(winRoot) else ""
-        if (winText.isNotBlank()) {
-          val winPkg = winRoot?.packageName?.toString() ?: "unknown"
-          KmCertoLogger.log(this, "JANELA[$index] pkg=$winPkg | texto_tamanho=${winText.length} | texto=$winText")
-          windowTexts.add(winText)
-        }
+      for ((i, window) in allWindows.withIndex()) {
+        val winRoot = window.root ?: continue
+        val winPkg = winRoot.packageName?.toString() ?: "?"
+        val winText = collectWindowText(winRoot)
+        KmCertoLogger.log(this, "WIN[$i] pkg=$winPkg | tamanho=${winText.length} | $winText")
+        if (winText.isNotBlank()) windowTexts.add(winText)
       }
     }
 
-    val text = windowTexts.joinToString(" |WIN| ")
+    val text = windowTexts.joinToString(" |W| ")
     if (text.isBlank()) return
 
     val minimumPerKm = KmCertoRuntime.getMinimumPerKm(this)
-    val parsed = KmCertoOfferParser.parse(
-      rawText = text,
-      minimumPerKm = minimumPerKm,
-      sourcePackage = packageName,
-    )
+    val parsed = KmCertoOfferParser.parse(text, minimumPerKm, packageName)
 
     if (parsed == null) {
-      if (text.contains("R$") || text.contains("km")) {
-         KmCertoLogger.log(this, "PARSE_FALHOU — R\$ ou km encontrado mas não parseado: $text")
+      if (text.contains("R$") || text.contains("km", ignoreCase = true)) {
+        KmCertoLogger.log(this, "PARSE_FALHOU — tinha R\$/km mas não parseou: $text")
       }
       return
     }
 
-    KmCertoLogger.log(this, "PARSE_OK fare=${parsed.totalFareLabel} | perKm=${parsed.perKm} | status=${parsed.status}")
+    KmCertoLogger.log(this, "PARSE_OK ${parsed.totalFareLabel} | ${parsed.distanceKm}km | R\$${parsed.perKm}/km | ${parsed.status}")
 
-    val signature = listOf(
-      packageName,
-      parsed.totalFareLabel,
-      parsed.status,
-      parsed.perKm.toString(),
-    ).joinToString("|")
-
+    val signature = "${packageName}|${parsed.totalFareLabel}|${parsed.perKm}"
     val now = System.currentTimeMillis()
     if (signature == lastSignature && now - lastEmissionAt < 3500) return
 
     lastSignature = signature
     lastEmissionAt = now
-    
-    // Nota: O envio de evento para o React Native aqui exigiria acesso ao módulo, 
-    // o que é complexo de um Service. O overlay visual já é mostrado abaixo.
     KmCertoOverlayService.show(this, parsed)
   }
 
@@ -663,12 +652,11 @@ class KmCertoOverlayService : Service() {
     data.perHour?.let { metricRow.addView(createMetricText("R$/hr", it)) }
     data.perMinute?.let { metricRow.addView(createMetricText("R$/min", it)) }
 
-    // Texto de km total
-    val kmText = data.distanceKm?.let { km ->
+    val kmTotalText = data.distanceKm?.let {
       TextView(this).apply {
-        text = String.format(Locale("pt", "BR"), "%.2f km", km)
+        text = String.format(Locale("pt", "BR"), "%.2f km", it)
         setTextColor(Color.parseColor("#CFCFD4"))
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
         gravity = Gravity.CENTER_HORIZONTAL
       }
     }
@@ -676,11 +664,11 @@ class KmCertoOverlayService : Service() {
     container.addView(statusText)
     container.addView(spaceView(dp(10)))
     container.addView(fareText)
-    container.addView(spaceView(dp(4)))
-    if (kmText != null) {
-      container.addView(kmText)
-      container.addView(spaceView(dp(4)))
+    if (kmTotalText != null) {
+      container.addView(spaceView(dp(2)))
+      container.addView(kmTotalText)
     }
+    container.addView(spaceView(dp(4)))
     container.addView(sourceText)
     container.addView(spaceView(dp(14)))
     container.addView(metricRow)
