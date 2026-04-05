@@ -82,6 +82,41 @@ class KmCertoNativeModule : Module() {
       }
     }
 
+    AsyncFunction("isBatteryOptimizationIgnored") {
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        pm.isIgnoringBatteryOptimizations(context.packageName)
+      } else {
+        true // Abaixo do Android 6 não existe otimização de bateria
+      }
+    }
+
+    AsyncFunction("openBatteryOptimizationSettings") {
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      try {
+        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+          Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            data = Uri.parse("package:${context.packageName}")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+          }
+        } else {
+          Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+          }
+        }
+        context.startActivity(intent)
+        true
+      } catch (_: Throwable) {
+        false
+      }
+    }
+
+    AsyncFunction("isMonitoringActive") {
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      KmCertoRuntime.isMonitoringEnabled(context)
+    }
+
     AsyncFunction("startMonitoring") {
       val context = appContext.reactContext ?: return@AsyncFunction false
       KmCertoRuntime.setMonitoringEnabled(context, true)
