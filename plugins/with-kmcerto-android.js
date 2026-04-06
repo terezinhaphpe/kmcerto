@@ -54,13 +54,20 @@ const withKmCertoManifest = (config) => {
       ],
     });
 
-    // Adicionar KmCertoOverlayService
-    mainApplication.service.push({
-      $: {
-        "android:name": "expo.modules.kmcertonative.KmCertoOverlayService",
-        "android:exported": "false",
-      },
-    });
+    // Adicionar KmCertoPermissionActivity
+    if (!mainApplication.activity) mainApplication.activity = [];
+    const hasPermActivity = mainApplication.activity.some(
+      (a) => a.$ && a.$["android:name"] === "expo.modules.kmcertonative.KmCertoPermissionActivity"
+    );
+    if (!hasPermActivity) {
+      mainApplication.activity.push({
+        $: {
+          "android:name": "expo.modules.kmcertonative.KmCertoPermissionActivity",
+          "android:exported": "false",
+          "android:theme": "@android:style/Theme.Translucent.NoTitleBar",
+        },
+      });
+    }
 
     return cfg;
   });
